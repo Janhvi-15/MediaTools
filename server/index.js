@@ -1,3 +1,5 @@
+import "dotenv/config"; // ← MUST be first, before everything
+
 import express from "express";
 import cors from "cors";
 import multer from "multer";
@@ -9,10 +11,18 @@ import { spawn } from "child_process";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 
+import connectDB from "./config/db.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-const PORT = 3001;
+
+// ✅ Add this debug line temporarily
+//console.log("MONGO_URI:", process.env.MONGO_URI);
+
+connectDB();
+
+const PORT = process.env.PORT || 3001;
 
 // ================== PATHS ==================
 const FFMPEG_PATH = "C:\\ffmpeg-8.1.1-essentials_build\\bin\\ffmpeg.exe";
@@ -24,7 +34,7 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 fs.mkdirSync(outputsDir, { recursive: true });
 
 // ================== CONFIG ==================
-const JWT_SECRET = "your-secret-key-change-this-in-production";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 const USERS_FILE = path.join(__dirname, "users.json");
 const HISTORY_FILE = path.join(__dirname, "history.json");
