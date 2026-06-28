@@ -1,4 +1,4 @@
-import "dotenv/config"; // ← MUST be first, before everything
+import "dotenv/config";
 
 import express from "express";
 import cors from "cors";
@@ -12,13 +12,12 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 
 import connectDB from "./config/db.js";
+import User from "./models/User.js";
+import History from "./models/History.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-
-// ✅ Add this debug line temporarily
-//console.log("MONGO_URI:", process.env.MONGO_URI);
 
 connectDB();
 
@@ -36,40 +35,10 @@ fs.mkdirSync(outputsDir, { recursive: true });
 // ================== CONFIG ==================
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const USERS_FILE = path.join(__dirname, "users.json");
-const HISTORY_FILE = path.join(__dirname, "history.json");
-
 // ================== MIDDLEWARE ==================
 app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
 app.use("/outputs", express.static(outputsDir));
-
-// ================== USER FUNCTIONS ==================
-function loadUsers() {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      return JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-    }
-  } catch {}
-  return [];
-}
-
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
-
-function loadHistory() {
-  try {
-    if (fs.existsSync(HISTORY_FILE)) {
-      return JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
-    }
-  } catch {}
-  return {};
-}
-
-function saveHistory(history) {
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
-}
 
 // ================== AUTH MIDDLEWARE ==================
 function requireAuth(req, res, next) {
@@ -92,15 +61,23 @@ app.post("/api/auth/register", async (req, res) => {
   if (!email || !password)
     return res.status(400).json({ error: "Email and password required" });
 
-  const users = loadUsers();
-  if (users.find((u) => u.email === email))
-    return res.status(400).json({ error: "Email already registered" });
+  try {
+    const existing = await User.findOne({ email });
+    if (existing)
+      return res.status(400).json({ error: "Email already registered" });
 
-  const hashed = await bcrypt.hash(password, 10);
-  users.push({ id: uuidv4(), name: name || email, email, password: hashed });
-  saveUsers(users);
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      name: name || email,
+      email,
+      password: hashed,
+    });
 
-  return res.json({ success: true, message: "Registered successfully" });
+    return res.json({ success: true, message: "Registered successfully" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/auth/login", async (req, res) => {
@@ -108,28 +85,38 @@ app.post("/api/auth/login", async (req, res) => {
   if (!email || !password)
     return res.status(400).json({ error: "Email and password required" });
 
-  const users = loadUsers();
-  const user = users.find((u) => u.email === email);
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
-  const token = jwt.sign(
-    { id: user.id, email: user.email, name: user.name },
-    JWT_SECRET,
-    { expiresIn: "7d" },
-  );
+    const token = jwt.sign(
+      { id: user._id, email: user.email, name: user.name },
+      JWT_SECRET,
+      { expiresIn: "7d" },
+    );
 
-  return res.json({
-    success: true,
-    token,
-    user: { id: user.id, name: user.name, email: user.email },
-  });
+    return res.json({
+      success: true,
+      token,
+      user: { id: user._id, name: user.name, email: user.email },
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  return res.json({ success: true, user: req.user });
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json({ success: true, user });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // ================== FFMPEG ==================
@@ -247,6 +234,7 @@ app.post("/api/image/process", (req, res) => {
           } catch {}
 
           const outputSize = fs.statSync(finalPath).size;
+
           return res.json({
             success: true,
             jobId,
@@ -473,29 +461,33 @@ app.post(
 );
 
 // ================== HISTORY ROUTES ==================
-app.get("/api/history", requireAuth, (req, res) => {
-  const history = loadHistory();
-  return res.json({ success: true, history: history[req.user.id] || [] });
+app.get("/api/history", requireAuth, async (req, res) => {
+  try {
+    const history = await History.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(100);
+    return res.json({ success: true, history });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-app.post("/api/history", requireAuth, (req, res) => {
-  const history = loadHistory();
-  if (!history[req.user.id]) history[req.user.id] = [];
-  history[req.user.id].unshift({
-    ...req.body,
-    id: uuidv4(),
-    timestamp: new Date().toISOString(),
-  });
-  history[req.user.id] = history[req.user.id].slice(0, 100);
-  saveHistory(history);
-  return res.json({ success: true });
+app.post("/api/history", requireAuth, async (req, res) => {
+  try {
+    await History.create({ ...req.body, userId: req.user.id });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-app.delete("/api/history", requireAuth, (req, res) => {
-  const history = loadHistory();
-  history[req.user.id] = [];
-  saveHistory(history);
-  return res.json({ success: true });
+app.delete("/api/history", requireAuth, async (req, res) => {
+  try {
+    await History.deleteMany({ userId: req.user.id });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // ================== HEALTH CHECK ==================
@@ -544,14 +536,14 @@ app.listen(PORT, () => {
   console.log("\n========================================");
   console.log(`🚀 Server running at http://localhost:${PORT}`);
   console.log("========================================");
-  console.log("POST  /api/image/process");
-  console.log("POST  /api/process-video");
-  console.log("POST  /api/auth/register");
-  console.log("POST  /api/auth/login");
-  console.log("GET   /api/auth/me");
-  console.log("GET   /api/history");
-  console.log("POST  /api/history");
-  console.log("DELETE /api/history");
-  console.log("GET   /api/health");
+  // console.log("POST  /api/image/process");
+  // console.log("POST  /api/process-video");
+  // console.log("POST  /api/auth/register");
+  // console.log("POST  /api/auth/login");
+  // console.log("GET   /api/auth/me");
+  // console.log("GET   /api/history");
+  // console.log("POST  /api/history");
+  // console.log("DELETE /api/history");
+  // console.log("GET   /api/health");
   console.log("========================================\n");
 });
