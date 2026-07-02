@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 //const API = "http://localhost:3001";
 // ✅ Replace with this import
-import API from "../config.js"; // for files inside components/
+//import API from "../config.js"; // for files inside components/
 // OR
 import API from "./config.js"; // for App.jsx which is in src/
 const operations = [

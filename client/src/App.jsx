@@ -9,7 +9,7 @@ import AuthModal from "./components/AuthModal.jsx";
 // ✅ Replace with this import
 import API from "../config.js"; // for files inside components/
 // OR
-import API from "./config.js"; // for App.jsx which is in src/
+//import API from "./config.js"; // for App.jsx which is in src/
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return "0 B";
