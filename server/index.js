@@ -36,7 +36,17 @@ fs.mkdirSync(outputsDir, { recursive: true });
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // ================== MIDDLEWARE ==================
-app.use(cors({ origin: "http://localhost:5173" }));
+//app.use(cors({ origin: "http://localhost:5173" }));
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://media-tools-git-main-janhvi-15s-projects.vercel.app",
+      "https://media-tools-janhvi-15s-projects.vercel.app", // add all your vercel URLs
+    ],
+    credentials: true,
+  }),
+);
 app.use(express.json());
 app.use("/outputs", express.static(outputsDir));
 
