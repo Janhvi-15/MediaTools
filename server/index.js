@@ -40,7 +40,9 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
-  process.env.FRONTEND_URL, // set this in Render env vars
+  "https://media-tools-blush.vercel.app", // ← add this
+  "https://media-tools-git-main-janhvi-15s-projects.vercel.app",
+  process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
