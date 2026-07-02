@@ -6,10 +6,12 @@ import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import ffmpegPath from "ffmpeg-static";
 
 import connectDB from "./config/db.js";
 import User from "./models/User.js";
@@ -24,10 +26,9 @@ connectDB();
 const PORT = process.env.PORT || 3001;
 
 // ================== PATHS ==================
-const FFMPEG_PATH = "C:\\ffmpeg-8.1.1-essentials_build\\bin\\ffmpeg.exe";
-
-const uploadsDir = "C:\\mediatools\\uploads";
-const outputsDir = "C:\\mediatools\\outputs";
+// Use OS temp directory — works on both Windows and Linux (Render)
+const uploadsDir = path.join(os.tmpdir(), "mediatools", "uploads");
+const outputsDir = path.join(os.tmpdir(), "mediatools", "outputs");
 
 fs.mkdirSync(uploadsDir, { recursive: true });
 fs.mkdirSync(outputsDir, { recursive: true });
@@ -36,17 +37,24 @@ fs.mkdirSync(outputsDir, { recursive: true });
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // ================== MIDDLEWARE ==================
-//app.use(cors({ origin: "http://localhost:5173" }));
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  process.env.FRONTEND_URL, // set this in Render env vars
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://media-tools-git-main-janhvi-15s-projects.vercel.app",
-      "https://media-tools-janhvi-15s-projects.vercel.app", // add all your vercel URLs
-    ],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked: ${origin}`));
+    },
     credentials: true,
   }),
 );
+
 app.use(express.json());
 app.use("/outputs", express.static(outputsDir));
 
@@ -77,11 +85,7 @@ app.post("/api/auth/register", async (req, res) => {
       return res.status(400).json({ error: "Email already registered" });
 
     const hashed = await bcrypt.hash(password, 10);
-    const user = await User.create({
-      name: name || email,
-      email,
-      password: hashed,
-    });
+    await User.create({ name: name || email, email, password: hashed });
 
     return res.json({ success: true, message: "Registered successfully" });
   } catch (err) {
@@ -133,11 +137,12 @@ app.get("/api/auth/me", requireAuth, async (req, res) => {
 function runFFmpeg(args) {
   return new Promise((resolve, reject) => {
     console.log("\n===============================");
-    console.log("Running FFmpeg");
-    console.log(FFMPEG_PATH, args.join(" "));
+    console.log("Running FFmpeg:", ffmpegPath);
+    console.log("Args:", args.join(" "));
     console.log("===============================\n");
 
-    const proc = spawn(FFMPEG_PATH, args);
+    // Use ffmpeg-static path (works on Linux/Render and Windows)
+    const proc = spawn(ffmpegPath, args);
     let stderr = "";
 
     proc.stderr.on("data", (d) => {
@@ -245,6 +250,16 @@ app.post("/api/image/process", (req, res) => {
 
           const outputSize = fs.statSync(finalPath).size;
 
+          // Auto-delete after 1 hour
+          setTimeout(
+            () => {
+              try {
+                fs.unlinkSync(finalPath);
+              } catch {}
+            },
+            60 * 60 * 1000,
+          );
+
           return res.json({
             success: true,
             jobId,
@@ -254,7 +269,7 @@ app.post("/api/image/process", (req, res) => {
             originalSize,
             outputSize,
             savings: 0,
-            downloadUrl: `http://localhost:3001/outputs/${jobId}.png`,
+            downloadUrl: `${process.env.BACKEND_URL || "http://localhost:3001"}/outputs/${jobId}.png`,
           });
         }
 
@@ -268,6 +283,16 @@ app.post("/api/image/process", (req, res) => {
         fs.unlinkSync(inputPath);
       } catch {}
 
+      // Auto-delete after 1 hour
+      setTimeout(
+        () => {
+          try {
+            fs.unlinkSync(outputPath);
+          } catch {}
+        },
+        60 * 60 * 1000,
+      );
+
       return res.json({
         success: true,
         jobId,
@@ -280,7 +305,7 @@ app.post("/api/image/process", (req, res) => {
           0,
           Math.round(((originalSize - outputSize) / originalSize) * 100),
         ),
-        downloadUrl: `http://localhost:3001/outputs/${jobId}.${ext}`,
+        downloadUrl: `${process.env.BACKEND_URL || "http://localhost:3001"}/outputs/${jobId}.${ext}`,
       });
     } catch (err) {
       try {
@@ -455,7 +480,7 @@ app.post(
         outputSize,
         originalSize: req.file.size,
         originalName: req.file.originalname,
-        downloadUrl: `http://localhost:3001/outputs/${outputId}.${ext}`,
+        downloadUrl: `${process.env.BACKEND_URL || "http://localhost:3001"}/outputs/${outputId}.${ext}`,
       });
     } catch (err) {
       try {
@@ -500,6 +525,37 @@ app.delete("/api/history", requireAuth, async (req, res) => {
   }
 });
 
+// ================== AUTO CLEANUP ==================
+function cleanOldFiles(directory, maxAgeMs = 60 * 60 * 1000) {
+  try {
+    const files = fs.readdirSync(directory);
+    const now = Date.now();
+    let deleted = 0;
+    files.forEach((file) => {
+      const filePath = path.join(directory, file);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.unlinkSync(filePath);
+        deleted++;
+      }
+    });
+    if (deleted > 0) console.log(`🧹 Cleaned ${deleted} old files`);
+  } catch (err) {
+    console.error("Cleanup error:", err.message);
+  }
+}
+
+setInterval(
+  () => {
+    cleanOldFiles(uploadsDir);
+    cleanOldFiles(outputsDir);
+  },
+  30 * 60 * 1000,
+);
+
+cleanOldFiles(uploadsDir);
+cleanOldFiles(outputsDir);
+
 // ================== HEALTH CHECK ==================
 app.get("/api/health", (req, res) => {
   res.json({
@@ -515,14 +571,6 @@ app.get("/", (req, res) => {
     success: true,
     message: "Media Tools API",
     version: "1.0.0",
-    routes: {
-      image: "/api/image/process",
-      video: "/api/process-video",
-      register: "/api/auth/register",
-      login: "/api/auth/login",
-      history: "/api/history",
-      health: "/api/health",
-    },
   });
 });
 
@@ -533,9 +581,7 @@ app.use((req, res) => {
 
 // ================== GLOBAL ERROR HANDLER ==================
 app.use((err, req, res, next) => {
-  console.error("\n========== SERVER ERROR ==========");
   console.error(err.stack || err.message);
-  console.error("==================================\n");
   res
     .status(500)
     .json({ success: false, error: err.message || "Internal Server Error" });
@@ -543,17 +589,8 @@ app.use((err, req, res, next) => {
 
 // ================== START SERVER ==================
 app.listen(PORT, () => {
-  console.log("\n========================================");
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
-  console.log("========================================");
-  // console.log("POST  /api/image/process");
-  // console.log("POST  /api/process-video");
-  // console.log("POST  /api/auth/register");
-  // console.log("POST  /api/auth/login");
-  // console.log("GET   /api/auth/me");
-  // console.log("GET   /api/history");
-  // console.log("POST  /api/history");
-  // console.log("DELETE /api/history");
-  // console.log("GET   /api/health");
-  console.log("========================================\n");
+  console.log(`\n🚀 Server running at http://localhost:${PORT}`);
+  console.log(`📁 Uploads: ${uploadsDir}`);
+  console.log(`📁 Outputs: ${outputsDir}`);
+  console.log(`🎬 FFmpeg: ${ffmpegPath}\n`);
 });

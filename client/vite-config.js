@@ -15,4 +15,9 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ["@imgly/background-removal"],
   },
+  define: {
+    __API_URL__: JSON.stringify(
+      process.env.VITE_API_URL || "http://localhost:3001",
+    ),
+  },
 });
